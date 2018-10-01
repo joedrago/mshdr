@@ -5,6 +5,7 @@
 
 #include <windows.h>
 #include <d3d11_1.h>
+#include <dxgi1_4.h>
 #include <d3dcompiler.h>
 #include <directxmath.h>
 #include <directxcolors.h>
@@ -48,6 +49,8 @@ static ID3D11SamplerState * sampler_ = nullptr;
 static const int TEXTURE_COUNT = 1;
 static ID3D11ShaderResourceView * textures_[TEXTURE_COUNT];
 static int currentTextureIndex_ = 0;
+
+static bool hdrActive_ = false;
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -209,7 +212,7 @@ static HRESULT InitDevice()
             ZeroMemory(&sd, sizeof(sd));
             sd.Width = width;
             sd.Height = height;
-            sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            sd.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
             sd.SampleDesc.Count = 1;
             sd.SampleDesc.Quality = 0;
             sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -228,7 +231,7 @@ static HRESULT InitDevice()
             sd.BufferCount = 1;
             sd.BufferDesc.Width = width;
             sd.BufferDesc.Height = height;
-            sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            sd.BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
             sd.BufferDesc.RefreshRate.Numerator = 60;
             sd.BufferDesc.RefreshRate.Denominator = 1;
             sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -240,12 +243,25 @@ static HRESULT InitDevice()
             hr = dxgiFactory->CreateSwapChain(device_, &sd, &swapChain_);
         }
 
+        if (FAILED(hr))
+            return hr;
+
+        IDXGISwapChain3 * swapChain3 = nullptr;
+        hr = swapChain_->QueryInterface(IID_PPV_ARGS(&swapChain3));
+        if(FAILED(hr)) {
+            return hr;
+        }
+        hr = swapChain3->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+        if(FAILED(hr)) {
+            hdrActive_ = false;
+        } else {
+            hdrActive_ = true;
+        }
+        swapChain3->Release();
+
         // Note this tutorial doesn't handle full-screen swapchains so we block the ALT+ENTER shortcut
         dxgiFactory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
         dxgiFactory->Release();
-
-        if (FAILED(hr))
-            return hr;
 
         // Create a render target view
         ID3D11Texture2D * pBackBuffer = nullptr;
@@ -526,6 +542,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         CleanupDevice();
         return 0;
     }
+
+    char windowTitle[1024];
+    sprintf(windowTitle, "mshdr - HDR: %s",
+        hdrActive_ ? "Active" : "Inactive"
+    );
+    SetWindowText(hwnd_, windowTitle);
 
     MSG msg = { 0 };
     while (WM_QUIT != msg.message) {
