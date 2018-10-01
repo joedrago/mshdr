@@ -1,19 +1,24 @@
-Texture2D texture0 : register( t0 );
-SamplerState sampler0 : register( s0 );
+Texture2D texture0: register ( t0 );
+SamplerState sampler0: register ( s0 );
+
+cbuffer cb0: register (b0)
+{
+    float4 params;
+};
 
 struct VS_INPUT
 {
-    float4 Pos : POSITION;
-    float2 Tex : TEXCOORD0;
+    float4 Pos: POSITION;
+    float2 Tex: TEXCOORD0;
 };
 
 struct PS_INPUT
 {
-    float4 Pos : SV_POSITION;
-    float2 Tex : TEXCOORD0;
+    float4 Pos: SV_POSITION;
+    float2 Tex: TEXCOORD0;
 };
 
-PS_INPUT VS( VS_INPUT input )
+PS_INPUT VS(VS_INPUT input)
 {
     PS_INPUT output = (PS_INPUT)0;
     output.Pos = input.Pos;
@@ -37,12 +42,45 @@ float3 PQ_OETF(float3 color)
     return E;
 }
 
-float4 PS( PS_INPUT input) : SV_Target
+float4 PS(PS_INPUT input) : SV_Target
 {
+    bool hdrActive = (params[0] > 0);
+    bool forceSDR = (params[1] > 0);
+    bool tonemap = (params[2] > 0);
+
+    // This fragment shader assumes the input data is BT.2020, 10000 nits, 2.2 gamma
+
     float4 sampledColor = texture0.Sample(sampler0, input.Tex);
     float4 linearColor = pow(sampledColor, 2.2);
-    float4 pqColor;
-    pqColor.rgb = PQ_OETF(linearColor.rgb);
-    pqColor.a = linearColor.a;
-    return pqColor;
+    float3 outColor = linearColor.rgb;
+
+    if (!hdrActive || forceSDR) {
+        // Crush it down to BT.709
+        float3x3 bt2020_to_bt709 = {
+            1.6604910021, -0.5876411388, -0.0728498633,
+            -0.1245504745, 1.1328998971, -0.0083494226,
+            -0.0181507634, -0.1005788980, 1.1187296614
+        };
+        outColor = mul(bt2020_to_bt709, outColor);
+        outColor = max(outColor, 0); // remove negative channels
+
+        // Scale it up to SDR output levels
+        outColor *= (10000 / 300); // assuming 300 nits for SDR
+        if (tonemap) {
+            // Tonemap (Reinhard): x / (x+1)
+            outColor = outColor / (outColor + 1);
+        }
+    }
+
+    // Clamp
+    outColor = clamp(outColor, 0, 1);
+
+    if (hdrActive) {
+        // Apply PQ
+        outColor = PQ_OETF(outColor);
+    } else {
+        // Apply basic gamma
+        outColor = pow(outColor, 1.0 / 2.2);
+    }
+    return float4(outColor.r, outColor.g, outColor.b, sampledColor.a);
 }

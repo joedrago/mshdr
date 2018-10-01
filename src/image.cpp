@@ -2,74 +2,13 @@
 
 #include "image.h"
 
+#include "png.h"
+
+#include <assert.h>
 #include <stdint.h>
 #include <string.h>
 
 #include <vector>
-
-// ---------------------------------------------------------------------------
-// Adapted from public MSDN docs
-
-typedef struct BITMAPFILEHEADER
-{
-    // uint16_t bfType; // Commented out because the alignment of this struct is tragic. I'll just deal with this manually.
-    uint32_t bfSize;
-    uint16_t bfReserved1;
-    uint16_t bfReserved2;
-    uint32_t bfOffBits;
-} BITMAPFILEHEADER;
-
-typedef int32_t FXPT2DOT30;
-typedef struct CIEXYZ
-{
-    FXPT2DOT30 ciexyzX;
-    FXPT2DOT30 ciexyzY;
-    FXPT2DOT30 ciexyzZ;
-} CIEXYZ;
-
-typedef struct CIEXYZTRIPLE
-{
-    CIEXYZ ciexyzRed;
-    CIEXYZ ciexyzGreen;
-    CIEXYZ ciexyzBlue;
-} CIEXYZTRIPLE;
-
-typedef struct BITMAPV5HEADER
-{
-    uint32_t bV5Size;
-    int32_t bV5Width;
-    int32_t bV5Height;
-    uint16_t bV5Planes;
-    uint16_t bV5BitCount;
-    uint32_t bV5Compression;
-    uint32_t bV5SizeImage;
-    int32_t bV5XPelsPerMeter;
-    int32_t bV5YPelsPerMeter;
-    uint32_t bV5ClrUsed;
-    uint32_t bV5ClrImportant;
-    uint32_t bV5RedMask;
-    uint32_t bV5GreenMask;
-    uint32_t bV5BlueMask;
-    uint32_t bV5AlphaMask;
-    uint32_t bV5CSType;
-    CIEXYZTRIPLE bV5Endpoints;
-    uint32_t bV5GammaRed;
-    uint32_t bV5GammaGreen;
-    uint32_t bV5GammaBlue;
-    uint32_t bV5Intent;
-    uint32_t bV5ProfileData;
-    uint32_t bV5ProfileSize;
-    uint32_t bV5Reserved;
-} BITMAPV5HEADER;
-
-#define BI_RGB        0
-#define BI_BITFIELDS  3
-
-#define LCS_sRGB                'sRGB'
-#define LCS_WINDOWS_COLOR_SPACE 'Win ' // Windows default color space
-#define PROFILE_EMBEDDED        'MBED'
-
-#define LCS_GM_ABS_COLORIMETRIC 8
 
 Image::Image()
     : width_(0)
@@ -85,28 +24,18 @@ Image::~Image()
         delete [] pixels_;
 }
 
-// figures out the depth of the channel mask, then returns max(channelDepth, currentDepth) and the right shift
-static int maskDepth(uint32_t mask, int currentDepth, int * channelDepth, int * rightShift)
+struct gfx_read_png_info
 {
-    int depth = 0;
-    *channelDepth = 0;
-    *rightShift = 0;
-
-    if (!mask)
-        return currentDepth;
-
-    // Shift out all trailing 0s
-    while (!(mask & 1)) {
-        mask >>= 1;
-        ++(*rightShift);
-    }
-
-    // Find the first unset bit
-    while (mask & (1 << (depth))) {
-        ++depth;
-    }
-    *channelDepth = depth;
-    return (depth > currentDepth) ? depth : currentDepth;
+    unsigned char * curr;
+    png_size_t remaining;
+};
+static void gfx_read_png(png_structp read, png_bytep data, png_size_t length)
+{
+    gfx_read_png_info * info = (gfx_read_png_info *)png_get_io_ptr(read);
+    assert(info->remaining >= length);
+    memcpy(data, info->curr, length);
+    info->curr += length;
+    info->remaining -= length;
 }
 
 bool Image::load(const char * filename)
@@ -130,100 +59,78 @@ bool Image::load(const char * filename)
         fclose(f);
     }
 
-    const uint16_t expectedMagic = 0x4D42; // 'BM'
-    uint16_t magic = 0;
-    BITMAPFILEHEADER fileHeader;
-    BITMAPV5HEADER info;
-    int rDepth, gDepth, bDepth, aDepth;
-    int rShift, gShift, bShift, aShift;
-    int depth = 8;
-    int packedPixelBytes = 0;
-    uint32_t * packedPixels;
-    int pixelCount;
-
-    if (fileContents.size() < (sizeof(magic) + sizeof(fileHeader))) {
+    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (png == NULL) {
         return false;
     }
 
-    memcpy(&magic, &fileContents[0], sizeof(magic));
-    if (magic != expectedMagic) {
+    png_infop info = png_create_info_struct(png);
+    if (info == NULL) {
+        png_destroy_read_struct(&png, NULL, NULL);
         return false;
     }
 
-    memcpy(&fileHeader, &fileContents[2], sizeof(fileHeader));
-    if (fileHeader.bfSize != fileContents.size()) {
+    if (setjmp(png_jmpbuf(png))) {
+        png_destroy_read_struct(&png, &info, NULL);
         return false;
     }
 
-    memset(&info, 0, sizeof(info));
-    memcpy(&info, &fileContents[sizeof(magic) + sizeof(fileHeader)], 4); // read bV5Size
-    if ((info.bV5Size >= fileContents.size()) || (info.bV5Size > sizeof(info))) {
-        return false;
+    gfx_read_png_info readInfo;
+    readInfo.curr = &fileContents[0];
+    readInfo.remaining = fileContents.size();
+    png_set_read_fn(png, &readInfo, gfx_read_png);
+    png_read_info(png, info);
+
+    int width      = png_get_image_width(png, info);
+    int height     = png_get_image_height(png, info);
+    int color_type = png_get_color_type(png, info);
+    int bit_depth  = png_get_bit_depth(png, info);
+
+    png_set_swap(png);
+
+    if (color_type == PNG_COLOR_TYPE_PALETTE)
+        png_set_palette_to_rgb(png);
+
+    // PNG_COLOR_TYPE_GRAY_ALPHA is always 8 or 16bit depth.
+    if (( color_type == PNG_COLOR_TYPE_GRAY) && ( bit_depth < 8))
+        png_set_expand_gray_1_2_4_to_8(png);
+
+    if (png_get_valid(png, info, PNG_INFO_tRNS))
+        png_set_tRNS_to_alpha(png);
+
+    // These color_type don't have an alpha channel then fill it with 0xff.
+    if (( color_type == PNG_COLOR_TYPE_RGB) ||
+        ( color_type == PNG_COLOR_TYPE_GRAY) ||
+        ( color_type == PNG_COLOR_TYPE_PALETTE))
+        png_set_filler(png, 0xFF, PNG_FILLER_AFTER);
+
+    if (( color_type == PNG_COLOR_TYPE_GRAY) ||
+        ( color_type == PNG_COLOR_TYPE_GRAY_ALPHA))
+        png_set_gray_to_rgb(png);
+
+    png_read_update_info(png, info);
+
+    png_bytep * row_pointers = (png_bytep *)malloc(sizeof(png_bytep) * height);
+    int rowBytes = (int)png_get_rowbytes(png, info);
+    for (int y = 0; y < height; y++) {
+        row_pointers[y] = (png_byte *)malloc(rowBytes);
     }
-    memcpy(&info, &fileContents[2 + sizeof(fileHeader)], info.bV5Size); // read the whole header
-    // TODO: Make decisions based on the size? (autodetect V4 or previous)
 
-    if (info.bV5BitCount != 32) {
-        return false;
-    }
+    png_read_image(png, row_pointers);
 
-    if (info.bV5Compression == BI_BITFIELDS) {
-        depth = maskDepth(info.bV5RedMask, depth, &rDepth, &rShift);
-        depth = maskDepth(info.bV5GreenMask, depth, &gDepth, &gShift);
-        depth = maskDepth(info.bV5BlueMask, depth, &bDepth, &bShift);
-        depth = maskDepth(info.bV5AlphaMask, depth, &aDepth, &aShift);
-    } else {
-        if (info.bV5Compression != BI_RGB) {
-            return false;
-        }
-
-        // Assume these masks/depths for BI_RGB
-        info.bV5BlueMask = 255 << 0;
-        info.bV5GreenMask = 255 << 8;
-        info.bV5RedMask = 255 << 16;
-        info.bV5AlphaMask = 255 << 24;
-        rDepth = gDepth = bDepth = aDepth = 8;
-    }
-
-    if ((depth != 8) && (depth != 10)) {
-        return false;
-    }
-
-    pixelCount = info.bV5Width * info.bV5Height;
-    packedPixelBytes = sizeof(uint32_t) * pixelCount;
-    if ((fileHeader.bfOffBits + packedPixelBytes) > fileContents.size()) {
-        return false;
-    }
-    packedPixels = new uint32_t[pixelCount];
-    memcpy(packedPixels, &fileContents[fileHeader.bfOffBits], packedPixelBytes);
-
-    width_ = info.bV5Width;
-    height_= info.bV5Height;
-    depth_ = (depth > 8) ? 16 : 8;
+    width_ = width;
+    height_= height;
+    depth_ = bit_depth;
     pixels_ = new unsigned char[bytes()];
-
-    if (depth == 10) {
-        // 10 bit
-        int i;
-        int maxSrcChannel = (1 << 10) - 1;
-        int maxDstChannel = (1 << 16) - 1;
-        for (i = 0; i < pixelCount; ++i) {
-            uint8_t * srcPixel = (uint8_t *)&packedPixels[i];
-            uint16_t * pixels = (uint16_t *)pixels_;
-            uint16_t * dstPixel = &pixels[i * 4];
-            dstPixel[0] = (maxDstChannel * ((packedPixels[i] & info.bV5RedMask) >> rShift)) / maxSrcChannel;
-            dstPixel[1] = (maxDstChannel * ((packedPixels[i] & info.bV5GreenMask) >> gShift)) / maxSrcChannel;
-            dstPixel[2] = (maxDstChannel * ((packedPixels[i] & info.bV5BlueMask) >> bShift)) / maxSrcChannel;
-            if (aDepth > 0)
-                dstPixel[3] = (packedPixels[i] & info.bV5AlphaMask) >> aShift;
-            else
-                dstPixel[3] = (1 << depth_) - 1;
-        }
-    } else {
-        // TODO: Implement?
-        memset(pixels_, 255, bytes());
+    int pitch = width_ * bpp();
+    for (int y = 0; y < height; y++) {
+        memcpy(pixels_ + (y * pitch), row_pointers[y], rowBytes);
     }
 
-    delete [] packedPixels;
+    png_destroy_read_struct(&png, &info, NULL);
+    for (int y = 0; y < height; y++) {
+        free(row_pointers[y]);
+    }
+    free(row_pointers);
     return true;
 }

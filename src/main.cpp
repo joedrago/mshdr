@@ -25,6 +25,11 @@ struct SimpleVertex
     XMFLOAT2 Tex;
 };
 
+struct ConstantBuffer
+{
+    XMFLOAT4 params;
+};
+
 static HINSTANCE hInstance_ = nullptr;
 static HWND hwnd_ = nullptr;
 
@@ -44,6 +49,7 @@ static ID3D11PixelShader * pixelShader_ = nullptr;
 static ID3D11InputLayout * vertexLayout_ = nullptr;
 static ID3D11Buffer * vertexBuffer_ = nullptr;
 static ID3D11Buffer * indexBuffer_ = nullptr;
+static ID3D11Buffer * constantBuffer_ = nullptr;
 static ID3D11SamplerState * sampler_ = nullptr;
 
 static const int TEXTURE_COUNT = 1;
@@ -51,6 +57,20 @@ static ID3D11ShaderResourceView * textures_[TEXTURE_COUNT];
 static int currentTextureIndex_ = 0;
 
 static bool hdrActive_ = false;
+static bool forceSDR_ = false;
+static bool tonemap_ = true;
+
+static void updateWindowTitle()
+{
+    char windowTitle[1024];
+    sprintf(windowTitle, "mshdr [Tex:%d] - HDR: %s ForceSDR: %s Tonemap: %s",
+        currentTextureIndex_,
+        hdrActive_ ? "Active" : "Inactive",
+        forceSDR_ ? "Enabled" : "Disabled",
+        tonemap_ ? "Enabled" : "Disabled"
+        );
+    SetWindowText(hwnd_, windowTitle);
+}
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -58,6 +78,36 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
     HDC hdc;
 
     switch (message) {
+        case WM_CHAR:
+        {
+            unsigned int key = wParam;
+            switch (key) {
+                case 32: // Space
+                    forceSDR_ = !forceSDR_;
+                    updateWindowTitle();
+                    break;
+
+                case 110: // N
+                    currentTextureIndex_ = (currentTextureIndex_ + 1) % TEXTURE_COUNT;
+                    updateWindowTitle();
+                    break;
+
+                case 112: // P
+                    --currentTextureIndex_;
+                    if(currentTextureIndex_ < 0) {
+                        currentTextureIndex_ = TEXTURE_COUNT - 1;
+                    }
+                    updateWindowTitle();
+                    break;
+
+                case 116: // T
+                    tonemap_ = !tonemap_;
+                    updateWindowTitle();
+                    break;
+            }
+            break;
+        }
+
         case WM_PAINT:
             hdc = BeginPaint(hWnd, &ps);
             EndPaint(hWnd, &ps);
@@ -248,11 +298,11 @@ static HRESULT InitDevice()
 
         IDXGISwapChain3 * swapChain3 = nullptr;
         hr = swapChain_->QueryInterface(IID_PPV_ARGS(&swapChain3));
-        if(FAILED(hr)) {
+        if (FAILED(hr)) {
             return hr;
         }
         hr = swapChain3->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
-        if(FAILED(hr)) {
+        if (FAILED(hr)) {
             hdrActive_ = false;
         } else {
             hdrActive_ = true;
@@ -347,6 +397,19 @@ static HRESULT InitDevice()
     // Set the input layout
     context_->IASetInputLayout(vertexLayout_);
 
+    // Create constant buffer
+    {
+        D3D11_BUFFER_DESC bd;
+        ZeroMemory(&bd, sizeof(bd) );
+        bd.Usage = D3D11_USAGE_DEFAULT;
+        bd.ByteWidth = sizeof(ConstantBuffer);
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        bd.CPUAccessFlags = 0;
+        hr = device_->CreateBuffer(&bd, nullptr, &constantBuffer_);
+        if (FAILED(hr))
+            return hr;
+    }
+
     // Compile the pixel shader
     ID3DBlob * pPSBlob = nullptr;
     hr = CompileShaderFromFile(L"data\\shaders.fx", "PS", "ps_4_0", &pPSBlob);
@@ -415,8 +478,8 @@ static HRESULT InitDevice()
     for (int textureIndex = 0; textureIndex < TEXTURE_COUNT; ++textureIndex) {
         Image image;
         char filename[MAX_PATH];
-        sprintf(filename, "data\\%d.bmp", textureIndex);
-        if(!image.load(filename) || (image.depth() != 16)) {
+        sprintf(filename, "data\\%d.png", textureIndex);
+        if (!image.load(filename) || (image.depth() != 16)) {
             continue;
         }
 
@@ -521,8 +584,18 @@ static void Render()
     context_->ClearRenderTargetView(renderTarget_, Colors::MidnightBlue);
     context_->ClearDepthStencilView(depthBufferView_, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
+    ConstantBuffer cb;
+    cb.params = XMFLOAT4(
+        hdrActive_ ? 1.0f : 0.0f,
+        forceSDR_ ? 1.0f : 0.0f,
+        tonemap_ ? 1.0f : 0.0f,
+        0);
+    context_->UpdateSubresource(constantBuffer_, 0, nullptr, &cb, 0, 0);
+
     context_->VSSetShader(vertexShader_, nullptr, 0);
+    context_->VSSetConstantBuffers(0, 1, &constantBuffer_);
     context_->PSSetShader(pixelShader_, nullptr, 0);
+    context_->PSSetConstantBuffers(0, 1, &constantBuffer_);
     context_->PSSetShaderResources(0, 1, &textures_[currentTextureIndex_]);
     context_->PSSetSamplers(0, 1, &sampler_);
     context_->DrawIndexed(6, 0, 0);
@@ -543,11 +616,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         return 0;
     }
 
-    char windowTitle[1024];
-    sprintf(windowTitle, "mshdr - HDR: %s",
-        hdrActive_ ? "Active" : "Inactive"
-    );
-    SetWindowText(hwnd_, windowTitle);
+    updateWindowTitle();
 
     MSG msg = { 0 };
     while (WM_QUIT != msg.message) {
