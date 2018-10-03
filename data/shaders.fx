@@ -44,6 +44,7 @@ float3 PQ_OETF(float3 color)
 
 float4 PS(PS_INPUT input) : SV_Target
 {
+    const float sdrWhiteLevel = 300.0;
     bool hdrActive = (params[0] > 0);
     bool forceSDR = (params[1] > 0);
     bool tonemap = (params[2] > 0);
@@ -65,10 +66,16 @@ float4 PS(PS_INPUT input) : SV_Target
         outColor = max(outColor, 0); // remove negative channels
 
         // Scale it up to SDR output levels
-        outColor *= (10000 / 300); // assuming 300 nits for SDR
+        outColor *= (10000 / sdrWhiteLevel);
         if (tonemap) {
             // Tonemap (Reinhard): x / (x+1)
             outColor = outColor / (outColor + 1);
+        }
+        outColor = clamp(outColor, 0, 1);
+
+        if (hdrActive) {
+            // Scale it back for display purposes
+            outColor *= (sdrWhiteLevel / 10000);
         }
     }
 

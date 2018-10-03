@@ -143,7 +143,7 @@ static HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow)
         return E_FAIL;
 
     hInstance_ = hInstance;
-    RECT rc = { 0, 0, 1920, 1080 };
+    RECT rc = { 0, 0, 2560, 1440 };
     AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
     hwnd_ = CreateWindow("mshdrWindowClass", "mshdr", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hInstance, nullptr);
     if (!hwnd_)
@@ -263,10 +263,12 @@ static HRESULT InitDevice()
             sd.Width = width;
             sd.Height = height;
             sd.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+            sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
             sd.SampleDesc.Count = 1;
             sd.SampleDesc.Quality = 0;
+            sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
             sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-            sd.BufferCount = 1;
+            sd.BufferCount = 2;
 
             hr = dxgiFactory2->CreateSwapChainForHwnd(device_, hwnd_, &sd, nullptr, nullptr, &swapChain1_);
             if (SUCCEEDED(hr)) {
@@ -282,6 +284,7 @@ static HRESULT InitDevice()
             sd.BufferDesc.Width = width;
             sd.BufferDesc.Height = height;
             sd.BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+            sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
             sd.BufferDesc.RefreshRate.Numerator = 60;
             sd.BufferDesc.RefreshRate.Denominator = 1;
             sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -289,6 +292,7 @@ static HRESULT InitDevice()
             sd.SampleDesc.Count = 1;
             sd.SampleDesc.Quality = 0;
             sd.Windowed = TRUE;
+            sd.BufferCount = 2;
 
             hr = dxgiFactory->CreateSwapChain(device_, &sd, &swapChain_);
         }
@@ -351,8 +355,6 @@ static HRESULT InitDevice()
         hr = device_->CreateDepthStencilView(depthBuffer_, &descDSV, &depthBufferView_);
         if (FAILED(hr) )
             return hr;
-
-        context_->OMSetRenderTargets(1, &renderTarget_, depthBufferView_);
 
         // Setup the viewport
         D3D11_VIEWPORT vp;
@@ -581,6 +583,8 @@ static void CleanupDevice()
 
 static void Render()
 {
+    context_->OMSetRenderTargets(1, &renderTarget_, depthBufferView_);
+
     context_->ClearRenderTargetView(renderTarget_, Colors::MidnightBlue);
     context_->ClearDepthStencilView(depthBufferView_, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
@@ -600,7 +604,7 @@ static void Render()
     context_->PSSetSamplers(0, 1, &sampler_);
     context_->DrawIndexed(6, 0, 0);
 
-    swapChain_->Present(0, 0);
+    swapChain_->Present(1, 0);
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow)
