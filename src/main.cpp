@@ -5,7 +5,7 @@
 
 #include <windows.h>
 #include <d3d11_1.h>
-#include <dxgi1_4.h>
+#include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <directxmath.h>
 #include <directxcolors.h>
@@ -94,7 +94,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 
                 case 112: // P
                     --currentTextureIndex_;
-                    if(currentTextureIndex_ < 0) {
+                    if (currentTextureIndex_ < 0) {
                         currentTextureIndex_ = TEXTURE_COUNT - 1;
                     }
                     updateWindowTitle();
@@ -124,7 +124,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
     return 0;
 }
 
-static HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow)
+static HRESULT InitWindow(HINSTANCE hInstance, LPWSTR lpCmdLine, int nCmdShow)
 {
     WNDCLASSEX wcex;
     wcex.cbSize = sizeof( WNDCLASSEX );
@@ -148,6 +148,11 @@ static HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow)
     hwnd_ = CreateWindow("mshdrWindowClass", "mshdr", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hInstance, nullptr);
     if (!hwnd_)
         return E_FAIL;
+
+    int x, y;
+    if (swscanf(lpCmdLine, L"%d %d", &x, &y) == 2) {
+        SetWindowPos(hwnd_, 0, x, y, 0, 0, SWP_NOSIZE);
+    }
 
     ShowWindow(hwnd_, nCmdShow);
     return S_OK;
@@ -300,18 +305,46 @@ static HRESULT InitDevice()
         if (FAILED(hr))
             return hr;
 
+        IDXGIAdapter1 * defaultAdapter = nullptr;
+        if (FAILED(dxgiFactory->EnumAdapters1(0, &defaultAdapter))) {
+            return hr;
+        }
+
+        // Try to find an HDR10 output connected to this display, and only engage HDR if there is one
+        bool hdrSupported = false;
+        IDXGIOutput * output;
+        for (UINT outputIndex = 0; defaultAdapter->EnumOutputs(outputIndex, &output) != DXGI_ERROR_NOT_FOUND; ++outputIndex) {
+            IDXGIOutput6 * output6;
+            output->QueryInterface(&output6);
+            DXGI_OUTPUT_DESC1 desc;
+            output6->GetDesc1(&desc);
+            output6->Release();
+            output->Release();
+
+            if (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
+                hdrSupported = true;
+            }
+        }
+
+        defaultAdapter->Release();
+
         IDXGISwapChain3 * swapChain3 = nullptr;
         hr = swapChain_->QueryInterface(IID_PPV_ARGS(&swapChain3));
         if (FAILED(hr)) {
             return hr;
         }
-        hr = swapChain3->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
-        if (FAILED(hr)) {
-            hdrActive_ = false;
+
+        if (hdrSupported) {
+            hr = swapChain3->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+            if (FAILED(hr)) {
+                hdrActive_ = false;
+            } else {
+                hdrActive_ = true;
+            }
+            swapChain3->Release();
         } else {
-            hdrActive_ = true;
+            hdrActive_ = false;
         }
-        swapChain3->Release();
 
         // Note this tutorial doesn't handle full-screen swapchains so we block the ALT+ENTER shortcut
         dxgiFactory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
@@ -612,7 +645,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
 
-    if (FAILED(InitWindow(hInstance, nCmdShow)))
+    if (FAILED(InitWindow(hInstance, lpCmdLine, nCmdShow)))
         return 0;
 
     if (FAILED(InitDevice())) {
